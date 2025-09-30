@@ -107,6 +107,10 @@ def fetch_daily_for_ticker(date_str: str, ticker: str) -> Optional[Dict[str, Any
         try: return float(x)
         except Exception: return None
 
+    change_val = to_float(row[change_col])
+    if change_val is not None:
+        change_val = round(change_val, 2)  # ✅ 소수 둘째 자리까지 반올림
+    
     rec: Dict[str, Any] = {
         "날짜": datetime.strptime(date_str, "%Y%m%d").strftime("%Y-%m-%d"),
         "종목코드": ticker,
@@ -116,8 +120,9 @@ def fetch_daily_for_ticker(date_str: str, ticker: str) -> Optional[Dict[str, Any
         "저가": to_int(row[low_col]),
         "종가": to_int(row[close_col]),
         "거래량": to_int(row[volume_col]),
-        "등락률": to_float(row[change_col]),
+        "등락률": change_val,
     }
+
     return rec
 
 # ---------- 시트 기록 (종목별 시트) ----------
