@@ -1,0 +1,35 @@
+name: KRX Daily to Google Sheet
+
+on:
+  schedule:
+    # 평일 매일 16:00 KST 실행(UTC 07:00). 1-5는 월~금
+    - cron: "0 7 * * 1-5"
+  workflow_dispatch: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          TICKERS: ${{ secrets.TICKERS }}
+          # RUN_DATE: ${{ secrets.RUN_DATE }}  # 필요시 주석 해제
+        run: |
+          python krx_daily_to_sheet.py
