@@ -2,7 +2,7 @@ name: KRX Daily to Google Sheet
 
 on:
   schedule:
-    # 평일 매일 16:00 KST 실행 (UTC 07:00). 1-5는 월~금
+    # 평일 매일 16:00 KST 실행(UTC 07:00). 1-5는 월~금
     - cron: "0 7 * * 1-5"
   workflow_dispatch: {}
 
@@ -29,8 +29,10 @@ jobs:
           pwd
           git rev-parse --short HEAD
           ls -la
-          echo "---- first 20 lines of krx_daily_to_sheet.py ----"
-          head -n 20 krx_daily_to_sheet.py || true
+          echo "---- first 80 lines of krx_daily_to_sheet.py ----"
+          sed -n '1,80p' krx_daily_to_sheet.py || true
+          echo "---- grep 거래대금 ----"
+          grep -n '거래대금' krx_daily_to_sheet.py || true
 
       - name: Run script
         env:
