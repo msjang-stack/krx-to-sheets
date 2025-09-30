@@ -24,6 +24,19 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+            - name: Show repo tree and script head
+        run: |
+          pwd
+          git rev-parse --short HEAD
+          ls -la
+          echo "---- first 60 lines of krx_daily_to_sheet.py ----"
+          sed -n '1,60p' krx_daily_to_sheet.py
+
+      - name: Print script version marker (grep)
+        run: |
+          grep -n "robust column matching version" -n krx_daily_to_sheet.py || true
+
+
       - name: Run script
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
