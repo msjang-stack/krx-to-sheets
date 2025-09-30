@@ -31,8 +31,8 @@ jobs:
           ls -la
           echo "---- first 80 lines of krx_daily_to_sheet.py ----"
           sed -n '1,80p' krx_daily_to_sheet.py || true
-          echo "---- grep 거래대금 ----"
-          grep -n '거래대금' krx_daily_to_sheet.py || true
+          echo "---- grep trading_value ----"
+          grep -n 'get_market_trading_value_by_date' krx_daily_to_sheet.py || true
 
       - name: Run script
         env:
