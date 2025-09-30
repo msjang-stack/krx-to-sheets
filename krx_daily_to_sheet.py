@@ -137,7 +137,7 @@ def ensure_ticker_sheet(sh, ticker: str, name: str, header: List[str]):
     first = ws.row_values(1)
     if first != header:
         if first:
-            ws.delete_row(1)
+            ws.delete_rows(1)
         ws.insert_row(header, 1)
     return ws
 
