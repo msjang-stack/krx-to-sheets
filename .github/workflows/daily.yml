@@ -34,6 +34,30 @@ jobs:
           echo "---- grep trading_value ----"
           grep -n 'get_market_trading_value_by_date' krx_daily_to_sheet.py || true
 
+
+      - name: Verify sheet open (quick)
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        run: |
+          python - << 'PY'
+import os, json, gspread
+from oauth2client.service_account import ServiceAccountCredentials
+sid = os.environ["SPREADSHEET_ID"].strip()
+info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+scopes = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_dict(info, scopes)
+gc = gspread.authorize(creds)
+print("[INFO] Trying open_by_key:", sid[:4], "...", sid[-4:])
+print("[INFO] Using service account:", info.get("client_email"))
+sh = gc.open_by_key(sid)   # 여기서 404가 나면 '공유/권한/ID' 문제
+print("[INFO] OPEN OK. Title:", sh.title)
+PY
+
+
+
+
+
       - name: Run script
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
