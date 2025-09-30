@@ -1,7 +1,7 @@
-# krx_daily_to_sheet.py  (robust column matching version)
+# krx_daily_to_sheet.py  (pykrx 최신 함수명 반영 + 견고 매칭)
 from datetime import datetime, timedelta
 import os, json, re
-from typing import List
+from typing import Optional, Dict
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 from pykrx import stock
@@ -13,8 +13,9 @@ SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")  # 서비�
 SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]                          # 필수
 WORKSHEET_NAME = os.environ.get("WORKSHEET_NAME", "daily_log")
 TICKERS = [t.strip() for t in os.environ.get("TICKERS", "082270,358570,000250").split(",") if t.strip()]
-RUN_DATE = os.environ.get("RUN_DATE")  # 예: "2025-09-29" (테스트용, 보통 비움)
+RUN_DATE = os.environ.get("RUN_DATE")  # 예: "2025-09-29"
 
+# ---------------- 공통 유틸 ----------------
 def authorize_from_json_str(json_str: str):
     scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     info = json.loads(json_str)
@@ -35,30 +36,25 @@ def get_recent_trading_day(base_date: datetime) -> datetime:
         d -= timedelta(days=1)
     return d
 
-# -------- 컬럼 이름 유연 매칭 유틸 --------
+# ------------- 컬럼 매칭(견고) -------------
 def _norm(s: str) -> str:
-    """공백/괄호/단위/기호/숫자 제거하여 컬럼명 정규화"""
     if s is None: return ""
     s = str(s)
     s = s.replace(" ", "")
-    s = re.sub(r"[\(\)\[\]{}％%원,.\-_/]", "", s)  # 괄호/단위/기호 제거
-    s = re.sub(r"\d+", "", s)                      # 숫자 제거
+    s = re.sub(r"[\(\)\[\]{}％%원,.\-_/]", "", s)
+    s = re.sub(r"\d+", "", s)
     return s
 
-def pick_col(df: pd.DataFrame, candidates: list) -> str | None:
-    """df에서 후보 컬럼명 리스트 중 하나를 정규화 비교로 찾아 원래 컬럼명을 리턴"""
+def pick_col(df: pd.DataFrame, candidates: list) -> Optional[str]:
     if df is None or df.empty: return None
     norm_map = {_norm(c): c for c in df.columns}
-    # 1) 정확 매칭
     for c in candidates:
         if c in df.columns:
             return c
-    # 2) 정규화 매칭
     for c in candidates:
         nc = _norm(c)
         if nc in norm_map:
             return norm_map[nc]
-    # 3) 부분 일치(안전 범위 내)
     for c in candidates:
         nc = _norm(c)
         for k, orig in norm_map.items():
@@ -66,24 +62,71 @@ def pick_col(df: pd.DataFrame, candidates: list) -> str | None:
                 return orig
     return None
 
+# ------------- 데이터 수집 -------------
+def _try_fetch_investor_value(date_str: str, ticker: str) -> Dict[str, Optional[int]]:
+    """
+    투자주체별 거래대금(순매수/매수/매도 중 기본은 순매수)을 조회.
+    최신 pykrx는 get_market_trading_value_by_date 사용. (공식 리포 문서 확인)
+    """
+    out = {"개인": None, "외국인합계": None, "기관합계": None}
+
+    try:
+        # on='매수' 또는 '매도'도 가능. 기본(미지정)은 '순매수'
+        df = stock.get_market_trading_value_by_date(date_str, date_str, ticker)  # ← 최신 함수명
+        if df is not None and not df.empty:
+            rec = df.reset_index().iloc[0].to_dict()
+            for k in list(out.keys()):
+                if k in rec:
+                    out[k] = int(rec[k])
+            return out
+    except Exception as e:
+        # 함수 미존재/티커 미지원 등은 None 유지
+        print(f"[INFO] investor breakdown fetch failed for {ticker}: {e}")
+
+    return out
+
+def _try_fetch_short(date_str: str, ticker: str) -> Dict[str, Optional[float]]:
+    out: Dict[str, Optional[float]] = {"short_qty": None, "short_value": None, "short_ratio": None}
+    try:
+        df = stock.get_shorting_status_by_date(date_str, date_str, ticker)
+    except Exception:
+        df = None
+    if df is None or df.empty:
+        return out
+    srow = df.iloc[0]
+    def pick_s(cols):
+        for c in cols:
+            if c in df.columns:
+                return c
+        norm = {c.replace(" ", ""): c for c in df.columns}
+        for c in cols:
+            k = c.replace(" ", "")
+            if k in norm: return norm[k]
+        return None
+    qty_col   = pick_s(["공매도 거래량", "공매도수량", "거래량"])
+    amt_col   = pick_s(["공매도 거래대금", "공매도거래대금", "거래대금", "거래대금(원)"])
+    ratio_col = pick_s(["공매도 비중", "공매도비중", "비중"])
+    if qty_col:   out["short_qty"]   = int(srow[qty_col])
+    if amt_col:   out["short_value"] = int(srow[amt_col])
+    if ratio_col:
+        try: out["short_ratio"] = float(srow[ratio_col])
+        except Exception: out["short_ratio"] = None
+    return out
+
 def fetch_daily_for_ticker(date_str: str, ticker: str) -> dict:
-    """OHLCV + 투자주체 순매수(거래대금) + 공매도 지표 수집 (컬럼명 변동에 강함)"""
+    """OHLCV + (가능 시) 투자주체 + (가능 시) 공매도"""
     ohlcv = stock.get_market_ohlcv_by_date(date_str, date_str, ticker)
     if ohlcv is None or ohlcv.empty:
         raise RuntimeError(f"No OHLCV for {ticker} on {date_str}")
-
     row = ohlcv.iloc[0]
 
-    # 후보 컬럼명(정규화 비교 포함)
     open_col  = pick_col(ohlcv, ["시가"])
     high_col  = pick_col(ohlcv, ["고가"])
     low_col   = pick_col(ohlcv, ["저가"])
     close_col = pick_col(ohlcv, ["종가"])
     vol_col   = pick_col(ohlcv, ["거래량"])
-    # 거래대금은 표기가 다양: 거래대금, 거래대금(원), 거래 대금, 거래대금(백만) 등
     val_col   = pick_col(ohlcv, ["거래대금", "거래대금(원)", "거래 대금", "거래대금(백만)"])
 
-    # 필수 컬럼 검증 (가격/거래량)
     missing = [(name, col) for name, col in [
         ("시가", open_col), ("고가", high_col), ("저가", low_col), ("종가", close_col), ("거래량", vol_col)
     ] if col is None]
@@ -93,13 +136,10 @@ def fetch_daily_for_ticker(date_str: str, ticker: str) -> dict:
             f"Need {[n for n,_ in missing]}, have {list(ohlcv.columns)}"
         )
 
-    # value(거래대금)는 없을 수 있어 None 허용
     value_val = None
     if val_col is not None:
-        try:
-            value_val = int(row[val_col])
-        except Exception:
-            value_val = None
+        try: value_val = int(row[val_col])
+        except Exception: value_val = None
 
     rec = {
         "date": datetime.strptime(date_str, "%Y%m%d").strftime("%Y-%m-%d"),
@@ -112,34 +152,15 @@ def fetch_daily_for_ticker(date_str: str, ticker: str) -> dict:
         "value": value_val,
     }
 
-    # 투자주체 순매수(거래대금)
-    inv = stock.get_trading_value_by_date(date_str, date_str, ticker)
-    if inv is not None and not inv.empty:
-        iv = inv.reset_index().iloc[0].to_dict()
-        rec["net_individual"]  = int(iv.get("개인", 0))
-        rec["net_foreign"]     = int(iv.get("외국인", 0))
-        rec["net_institution"] = int(iv.get("기관합계", 0))
-    else:
-        rec["net_individual"] = rec["net_foreign"] = rec["net_institution"] = None
+    inv = _try_fetch_investor_value(date_str, ticker)
+    rec["net_individual"]  = inv.get("개인")
+    rec["net_foreign"]     = inv.get("외국인합계")
+    rec["net_institution"] = inv.get("기관합계")
 
-    # 공매도 (없을 수 있음)
-    short_df = stock.get_shorting_status_by_date(date_str, date_str, ticker)
-    rec["short_qty"] = rec["short_value"] = rec["short_ratio"] = None
-    if short_df is not None and not short_df.empty:
-        srow = short_df.iloc[0]
-        qty_col   = pick_col(short_df, ["공매도 거래량", "공매도수량", "거래량"])
-        amt_col   = pick_col(short_df, ["공매도 거래대금", "공매도거래대금", "거래대금", "거래대금(원)"])
-        ratio_col = pick_col(short_df, ["공매도 비중", "공매도비중", "비중"])
-        if qty_col:   rec["short_qty"] = int(srow[qty_col])
-        if amt_col:   rec["short_value"] = int(srow[amt_col])
-        if ratio_col:
-            try:
-                rec["short_ratio"] = float(srow[ratio_col])
-            except Exception:
-                rec["short_ratio"] = None
-
+    rec.update(_try_fetch_short(date_str, ticker))
     return rec
 
+# ------------- 시트 기록 -------------
 def ensure_worksheet(sh, name: str, header):
     try:
         ws = sh.worksheet(name)
@@ -148,8 +169,7 @@ def ensure_worksheet(sh, name: str, header):
         ws.append_row(header)
     first = ws.row_values(1)
     if first != header:
-        if first:
-            ws.delete_row(1)
+        if first: ws.delete_row(1)
         ws.insert_row(header, 1)
     return ws
 
@@ -172,7 +192,6 @@ def main():
             r = fetch_daily_for_ticker(date_str, t)
             records.append(r)
         except Exception as e:
-            # 디버그: 가용 컬럼을 같이 찍어서 원인 파악 용이
             try:
                 df_dbg = stock.get_market_ohlcv_by_date(date_str, date_str, t)
                 cols = list(df_dbg.columns) if df_dbg is not None else []
