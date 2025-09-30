@@ -35,21 +35,60 @@ def get_recent_trading_day(base_date: datetime) -> datetime:
     return d
 
 def fetch_daily_for_ticker(date_str: str, ticker: str) -> dict:
+    """Get OHLCV, investor net buys by type, and short-selling metrics for date/ticker
+       - 컬럼명이 종목/시장에 따라 '거래대금(원)' 처럼 달라지는 경우를 대비해 유연 매칭
+    """
     ohlcv = stock.get_market_ohlcv_by_date(date_str, date_str, ticker)
     if ohlcv is None or ohlcv.empty:
         raise RuntimeError(f"No OHLCV for {ticker} on {date_str}")
+
     row = ohlcv.iloc[0]
+
+    def pick(df, candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        # 공백 제거/괄호 등 정규화 후 매칭 시도
+        norm = {col.replace(" ", "").replace("(원)", ""): col for col in df.columns}
+        for c in candidates:
+            k = c.replace(" ", "").replace("(원)", "")
+            if k in norm:
+                return norm[k]
+        return None
+
+    # 각 항목별 후보 컬럼명
+    open_col  = pick(ohlcv, ["시가"])
+    high_col  = pick(ohlcv, ["고가"])
+    low_col   = pick(ohlcv, ["저가"])
+    close_col = pick(ohlcv, ["종가"])
+    vol_col   = pick(ohlcv, ["거래량"])
+    val_col   = pick(ohlcv, ["거래대금", "거래대금(원)"])
+
+    # 필수 컬럼 체크 (가격/거래량은 없으면 의미가 없으니 에러)
+    for need, nm in [("시가", open_col), ("고가", high_col), ("저가", low_col), ("종가", close_col), ("거래량", vol_col)]:
+        if nm is None:
+            raise RuntimeError(f"Missing required column for {ticker}: {need} (available: {list(ohlcv.columns)})")
+
+    # value(거래대금)은 ETF/특정 경우에 표기 다를 수 있어 None 허용
+    value_val = None
+    if val_col is not None:
+        try:
+            value_val = int(row[val_col])
+        except Exception:
+            value_val = None  # 안전하게 통과
+
     rec = {
         "date": datetime.strptime(date_str, "%Y%m%d").strftime("%Y-%m-%d"),
         "ticker": ticker,
-        "open": int(row["시가"]),
-        "high": int(row["고가"]),
-        "low": int(row["저가"]),
-        "close": int(row["종가"]),
-        "volume": int(row["거래량"]),
-        "value": int(row["거래대금"]),
+        "open": int(row[open_col]),
+        "high": int(row[high_col]),
+        "low": int(row[low_col]),
+        "close": int(row[close_col]),
+        "volume": int(row[vol_col]),
+        "value": value_val,
     }
 
+    # 투자주체 순매수(거래대금) — 없으면 None
     inv = stock.get_trading_value_by_date(date_str, date_str, ticker)
     if inv is not None and not inv.empty:
         iv = inv.reset_index().iloc[0].to_dict()
@@ -59,20 +98,26 @@ def fetch_daily_for_ticker(date_str: str, ticker: str) -> dict:
     else:
         rec["net_individual"] = rec["net_foreign"] = rec["net_institution"] = None
 
+    # 공매도 — 비어있을 수 있음(ETF 등)
     short_df = stock.get_shorting_status_by_date(date_str, date_str, ticker)
     rec["short_qty"] = rec["short_value"] = rec["short_ratio"] = None
     if short_df is not None and not short_df.empty:
         srow = short_df.iloc[0]
-        def pick(cols):
+        def pick_s(cols):
             for c in cols:
                 if c in short_df.columns:
                     return c
+            norm = {col.replace(" ", ""): col for col in short_df.columns}
+            for c in cols:
+                k = c.replace(" ", "")
+                if k in norm:
+                    return norm[k]
             return None
-        qty_col = pick(["공매도 거래량", "공매도수량", "거래량"])
-        amt_col = pick(["공매도 거래대금", "공매도거래대금", "거래대금"])
-        ratio_col = pick(["공매도 비중", "공매도비중", "비중"])
-        if qty_col: rec["short_qty"] = int(srow[qty_col])
-        if amt_col: rec["short_value"] = int(srow[amt_col])
+        qty_col   = pick_s(["공매도 거래량", "공매도수량", "거래량"])
+        amt_col   = pick_s(["공매도 거래대금", "공매도거래대금", "거래대금"])
+        ratio_col = pick_s(["공매도 비중", "공매도비중", "비중"])
+        if qty_col:   rec["short_qty"] = int(srow[qty_col])
+        if amt_col:   rec["short_value"] = int(srow[amt_col])
         if ratio_col:
             try:
                 rec["short_ratio"] = float(srow[ratio_col])
@@ -80,6 +125,7 @@ def fetch_daily_for_ticker(date_str: str, ticker: str) -> dict:
                 rec["short_ratio"] = None
 
     return rec
+
 
 def ensure_worksheet(sh, name: str, header):
     try:
