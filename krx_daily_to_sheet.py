@@ -9,11 +9,11 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ---- 환경변수 ----
-SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")  # JSON 문자열
-SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]
+SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")  # 서비스 계정 JSON(문자열)
+SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]                          # 필수
 WORKSHEET_NAME = os.environ.get("WORKSHEET_NAME", "daily_log")
 TICKERS = [t.strip() for t in os.environ.get("TICKERS", "082270,358570,000250").split(",") if t.strip()]
-RUN_DATE = os.environ.get("RUN_DATE")  # 예: "2025-09-29"
+RUN_DATE = os.environ.get("RUN_DATE")  # 예: "2025-09-29" (테스트용, 보통 비움)
 
 def authorize_from_json_str(json_str: str):
     scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -22,6 +22,7 @@ def authorize_from_json_str(json_str: str):
     return gspread.authorize(creds)
 
 def get_recent_trading_day(base_date: datetime) -> datetime:
+    """기준일 기준 가장 가까운 거래일(과거)을 찾기 (주말/휴일 보정)"""
     d = base_date
     for _ in range(20):
         s = d.strftime("%Y%m%d")
@@ -36,11 +37,11 @@ def get_recent_trading_day(base_date: datetime) -> datetime:
 
 # -------- 컬럼 이름 유연 매칭 유틸 --------
 def _norm(s: str) -> str:
-    """공백/괄호/단위/기호/숫자를 제거하여 컬럼명 정규화"""
+    """공백/괄호/단위/기호/숫자 제거하여 컬럼명 정규화"""
     if s is None: return ""
     s = str(s)
     s = s.replace(" ", "")
-    s = re.sub(r"[\(\)\[\]{}％%원,.\-_/]", "", s)   # 괄호/단위/기호 제거
+    s = re.sub(r"[\(\)\[\]{}％%원,.\-_/]", "", s)  # 괄호/단위/기호 제거
     s = re.sub(r"\d+", "", s)                      # 숫자 제거
     return s
 
@@ -50,12 +51,14 @@ def pick_col(df: pd.DataFrame, candidates: list) -> str | None:
     norm_map = {_norm(c): c for c in df.columns}
     # 1) 정확 매칭
     for c in candidates:
-        if c in df.columns: return c
+        if c in df.columns:
+            return c
     # 2) 정규화 매칭
     for c in candidates:
         nc = _norm(c)
-        if nc in norm_map: return norm_map[nc]
-    # 3) 후보 각각의 부분일치(안전 범위 내)
+        if nc in norm_map:
+            return norm_map[nc]
+    # 3) 부분 일치(안전 범위 내)
     for c in candidates:
         nc = _norm(c)
         for k, orig in norm_map.items():
@@ -113,8 +116,8 @@ def fetch_daily_for_ticker(date_str: str, ticker: str) -> dict:
     inv = stock.get_trading_value_by_date(date_str, date_str, ticker)
     if inv is not None and not inv.empty:
         iv = inv.reset_index().iloc[0].to_dict()
-        rec["net_individual"] = int(iv.get("개인", 0))
-        rec["net_foreign"] = int(iv.get("외국인", 0))
+        rec["net_individual"]  = int(iv.get("개인", 0))
+        rec["net_foreign"]     = int(iv.get("외국인", 0))
         rec["net_institution"] = int(iv.get("기관합계", 0))
     else:
         rec["net_individual"] = rec["net_foreign"] = rec["net_institution"] = None
@@ -169,7 +172,7 @@ def main():
             r = fetch_daily_for_ticker(date_str, t)
             records.append(r)
         except Exception as e:
-            # 디버그용: 현재 OHLCV 컬럼을 출력해 주면 다음 대응이 쉬움
+            # 디버그: 가용 컬럼을 같이 찍어서 원인 파악 용이
             try:
                 df_dbg = stock.get_market_ohlcv_by_date(date_str, date_str, t)
                 cols = list(df_dbg.columns) if df_dbg is not None else []
